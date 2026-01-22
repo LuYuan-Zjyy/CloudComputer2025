@@ -110,10 +110,10 @@ class RedisClient:
 ```
 
 **设计优势：**
-- ✅ 单例模式确保全局只有一个 RedisClient 实例
-- ✅ 内存后备机制保证服务可用性
-- ✅ TTL 自动过期，节省资源
-- ✅ 支持并发访问，适合分布式部署
+- 单例模式确保全局只有一个 RedisClient 实例
+- 内存后备机制保证服务可用性
+- TTL 自动过期，节省资源
+- 支持并发访问，适合分布式部署
 
 #### 2.2.2 Docker 容器化部署
 
@@ -753,85 +753,74 @@ LSH 优化后：
 
 **实现细节**：在验证 Prompt 中明确要求 LLM 采用思维链分析，并输出 JSON 格式的评估结果（包含 assessment 字段记录推理过程）。前端展示时，将 assessment 作为"AI 评估"展示给用户，提高了结果的可信度。
 
-## 附录：核心代码结构
+---
 
-```
-factguardian/
-├── backend/                          # 后端服务
-│   ├── app/                          # 应用主目录
-│   │   ├── main.py                   # FastAPI 应用入口点，定义所有 API 端点（1067行）
-│   │   └── services/                 # 业务逻辑服务层
-│   │       ├── __init__.py           # 服务模块初始化
-│   │       ├── parser.py             # 文档解析服务（支持 DOCX、PDF、TXT、MD）
-│   │       ├── llm_client.py         # LLM API 客户端（DeepSeek 封装，292行）
-│   │       ├── redis_client.py       # Redis 缓存客户端（单例模式，支持内存降级）
-│   │       ├── fact_extractor.py     # 事实提取服务（基于 LLM 的结构化提取）
-│   │       ├── fact_schema.py        # 事实数据模型定义
-│   │       ├── fact_normalizer.py   # 事实规范化服务
-│   │       ├── conflict_detector.py  # 冲突检测服务（核心算法，734行，批量并行处理）
-│   │       ├── verifier.py           # 事实验证服务（外部搜索 + LLM 评估，272行）
-│   │       ├── lsh_filter.py         # LSH 相似度过滤（MinHash 算法）
-│   │       ├── search_client.py      # 外部搜索客户端（Tavily/Serper/Mock）
-│   │       ├── prompt_tuner.py       # Prompt 优化器（材料驱动提示）
-│   │       ├── reference_comparator.py # 参考文档对比服务（229行）
-│   │       ├── image_extractor.py    # 图片内容提取（Claude/GPT-4V/豆包 Vision，405行）
-│   │       ├── image_text_comparator.py # 图文一致性对比服务（223行）
-│   │       ├── coref_resolver.py     # 共指消解服务
-│   │       ├── nlp_extractor.py      # NLP 提取服务
-│   │       ├── semantic_indexer.py   # 语义索引服务
-│   │       └── progress_manager.py   # 进度管理器（SSE 进度推送）
-│   ├── Dockerfile                    # 后端容器定义（Python 3.10-slim）
-│   ├── .dockerignore                # Docker 构建忽略文件
-│   ├── requirements.txt             # Python 依赖包列表
-│   ├── test_auto.py                 # 自动化测试脚本
-│   ├── test_image_comparison.py     # 图文对比测试脚本
-│   ├── test_reference_comparison.py  # 参考对比测试脚本
-│   └── [测试数据文件]                # test_data*.txt, *.docx, *.png 等
-│
-├── frontend/                         # 前端应用
-│   ├── src/                          # 源代码目录
-│   │   ├── main.jsx                  # React 应用入口点
-│   │   ├── App.jsx                   # 主应用组件（路由和状态管理）
-│   │   ├── api.js                    # API 调用封装（axios 封装）
-│   │   ├── index.css                 # 全局样式文件
-│   │   └── components/               # UI 组件目录
-│   │       ├── UploadSection.jsx    # 文件上传组件
-│   │       ├── DocumentViewer.jsx    # 文档浏览组件（支持高亮和跳转）
-│   │       ├── ConflictList.jsx     # 冲突列表组件（显示冲突详情）
-│   │       ├── RepetitionList.jsx   # 重复内容列表组件
-│   │       ├── VerificationResult.jsx # 校验结果组件（显示验证结果）
-│   │       ├── FunLoading.jsx       # 加载动画组件（SSE 进度显示）
-│   │       ├── MultiDocComparison.jsx # 多文档对比组件（参考对比功能）
-│   │       └── ImageTextComparison.jsx # 图文对比组件
-│   ├── public/                       # 静态资源目录
-│   ├── Dockerfile                    # 前端容器定义（多阶段构建）
-│   ├── .dockerignore                # Docker 构建忽略文件
-│   ├── package.json                  # Node.js 依赖配置
-│   ├── package-lock.json             # 依赖锁定文件
-│   ├── vite.config.js                # Vite 构建配置
-│   ├── tailwind.config.js            # Tailwind CSS 配置
-│   ├── postcss.config.js             # PostCSS 配置
-│   └── index.html                    # HTML 入口文件
-│
-├── image/                            # 图片资源目录（示例图片等）
-│
-├── .vscode/                          # VS Code 配置目录
-│
-├── docker-compose.yml                # Docker Compose 开发环境配置
-├── docker-compose.prod.yml           # Docker Compose 生产环境配置
-├── start-docker.ps1                  # Windows PowerShell 启动脚本
-├── stop-docker.ps1                   # Windows PowerShell 停止脚本
-├── restart-docker.ps1                # Windows PowerShell 重启脚本
-│
-├── .env                              # 环境变量配置（需自行创建）
-├── .env.example                      # 环境变量模板
-├── .gitignore                        # Git 忽略文件配置
-│
-├── README.md                         # 项目说明文档
-├── PROGRESS.md                       # 开发进度文档
-├── EXPERIMENT_REPORT.md              # 实验报告文档
-├── TODO.md                           # 待办事项列表
-├── 分工.md                           # 项目分工文档
-├── ZXY_BRANCH_REVIEW.md             # 分支审查文档
-```
+## 七、总结与反思
+
+### 7.1 项目完成情况
+
+本项目成功实现了 FactGuardian 长文本事实一致性验证系统，完成了从需求分析、技术架构设计、核心功能实现到测试验证的完整开发流程。系统实现了文档解析、事实提取、冲突检测、溯源校验等核心功能，以及参考文本对比、图文一致性对比等扩展功能。
+
+**核心成果**：
+- 事实提取准确率 > 98%，冲突检测准确率 > 90%，误报率 < 5%
+- 通过 LSH 优化，将冲突检测时间从 15 分钟缩短到 30 秒，提升 30 倍
+- 实现了完整的云原生架构，支持 Docker 容器化部署
+- 搭建了功能完整的前端界面，支持实时进度追踪、高亮跳转、历史记录管理
+
+### 7.2 技术收获
+
+**Prompt 工程实践**：通过材料驱动提示优化，我们深刻理解了上下文信息对 LLM 性能的重要影响。自动提取领域关键词、单位、时间短语等信息并注入到 Prompt 中，将事实提取准确率提升了 15-20%。这让我们认识到，Prompt 工程不仅仅是编写提示词，更重要的是理解任务特点和优化策略。
+
+**性能优化经验**：LSH 算法的应用让我们体验了从 O(n²) 到接近 O(n) 的性能提升。这个过程让我们学会了如何分析算法复杂度，如何选择合适的优化策略，以及如何在准确性和性能之间找到平衡点。
+
+**系统设计能力**：通过设计内存后备机制、多源搜索降级、JSON 解析容错等机制，我们提升了系统设计的健壮性。这些设计让我们认识到，一个好的系统不仅要实现功能，更要考虑各种异常情况和边界条件。
+
+**云原生实践**：Docker 容器化部署、Redis 事实黑板、健康检查探针等云原生技术的应用，让我们掌握了现代软件部署的最佳实践。这些经验对于未来从事大规模系统开发具有重要意义。
+
+### 7.3 遇到的挑战与解决方案
+
+**挑战一：LLM 输出格式不稳定**
+
+**问题**：初期测试中，LLM 经常在 JSON 前后添加 markdown 代码块标记、多余的解释文字等，导致 JSON 解析失败率高达 30%。
+
+**解决方案**：我们在所有 Prompt 中都明确要求输出格式，并实现了多层次的 JSON 解析容错机制。首先尝试提取 markdown 代码块中的 JSON，然后尝试提取最外层的花括号内容，最后压缩空白字符后再解析。这种多层次解析机制将 JSON 解析成功率提升到 95% 以上。
+
+**挑战二：冲突检测性能瓶颈**
+
+**问题**：当事实数量达到 500 条时，传统两两比对需要比对 124,750 对，处理时间长达 5-10 分钟，严重影响用户体验。
+
+**解决方案**：我们引入了 MinHash LSH 算法，将相似度计算的时间复杂度优化到接近 O(n)。同时，我们设计了多策略混合检测机制，优先使用结构化字段比对和关键词匹配，LSH 作为性能优化的辅助手段。这种设计兼顾了准确性和性能，将处理时间缩短到 30 秒。
+
+**挑战三：系统可用性问题**
+
+**问题**：在开发测试阶段，Redis 服务可能不可用，但系统仍需要能够运行。同时，生产环境中 Redis 故障不应该导致整个系统崩溃。
+
+**解决方案**：我们设计了内存后备机制，当 Redis 操作失败时自动降级到内存字典存储。使用模块级全局变量确保所有 RedisClient 实例共享同一个内存存储，保证数据一致性。这种设计使得系统在 Redis 不可用时仍能正常运行，提高了系统的可用性。
+
+**挑战四：Docker 构建速度慢**
+
+**问题**：每次构建 Docker 镜像都需要重新下载和安装系统依赖，耗时过长。
+
+**解决方案**：我们优化了 Dockerfile，使用 BuildKit 缓存挂载（`--mount=type=cache`）缓存 apt 和 pip 的下载包。同时，我们添加了多个镜像源备选方案，确保构建的可靠性。这些优化使得后续构建速度大幅提升。
+
+### 7.4 不足与改进方向
+
+**不足一：前端功能相对简单**
+
+当前前端主要实现了基本的结果展示功能，缺乏更高级的交互特性。未来可以考虑添加文档编辑、批量处理、导出报告等功能。
+
+**不足二：LLM 调用成本控制**
+
+虽然我们实现了内部数据过滤和验证数量控制，但在大规模文档处理时，LLM API 调用成本仍然较高。未来可以考虑实现更智能的缓存机制，或者使用更便宜的模型进行初步筛选。
+
+**不足三：测试覆盖不够全面**
+
+虽然我们进行了多数据集测试，但测试用例主要针对典型场景。未来需要增加边界情况测试、压力测试、并发测试等，提高系统的可靠性。
+
+**改进方向**：
+1. **增量检测**：支持文档版本对比，只检测变化部分，提高处理效率
+2. **领域定制**：针对法律、医学、金融等垂直领域优化 Prompt 和检测规则
+3. **实时协作**：使用 WebSocket 支持多人实时协作校验
+4. **更智能的缓存**：缓存相似文档的处理结果，避免重复计算
+
 
