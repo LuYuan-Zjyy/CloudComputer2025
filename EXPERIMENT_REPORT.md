@@ -2,6 +2,12 @@
 
 **小组成员：马舒童 10235501462； 张欣扬 10235501413； 詹江叶煜 10235501471（具体分工见分工文档分工.md）**
 
+**项目地址**：
+
+https://github.com/LuYuan-Zjyy/CloudComputer2025（成品提交）
+
+https://github.com/LuYuan-Zjyy/factguardian（前期xie，可看到具体分工commit情况）
+
 ## 一、项目概述
 
 ### 1.1 研究背景与痛点
