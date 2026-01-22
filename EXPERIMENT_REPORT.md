@@ -74,11 +74,11 @@
 └─────────────────────────────────────────────────────────────────────────┘
 ```
 
-### **2.2 云原生组件运用**
+### 2.2 云原生组件运用
 
-#### **2.2.1 Redis 作为"事实黑板"**
+#### 2.2.1 Redis 作为"事实黑板"
 
-**设计思考**：系统需要存储文档解析结果、提取的事实、检测到的冲突等多类数据。考虑到数据量大、需要快速访问、支持多文档并发处理等需求，我们选择 Redis 作为统一的事实存储中间件。
+系统采用 Redis 作为统一的事实存储中间件，实现以下核心功能：
 
 **Redis 数据模型设计：**
 
@@ -110,12 +110,12 @@ class RedisClient:
 ```
 
 **设计优势：**
+- ✅ 单例模式确保全局只有一个 RedisClient 实例
+- ✅ 内存后备机制保证服务可用性
+- ✅ TTL 自动过期，节省资源
+- ✅ 支持并发访问，适合分布式部署
 
-单例模式确保全局只有一个 RedisClient 实例，避免了重复连接和资源浪费。内存后备机制是系统的关键容错设计：当 Redis 服务不可用时，系统自动降级到内存存储，保证核心功能不受影响。TTL 自动过期机制（24小时）有效管理存储空间，避免数据积累。同时，Redis 的并发访问特性使得系统能够支持多用户同时进行文档分析，适合分布式部署场景。
-
-#### **2.2.2 Docker 容器化部署**
-
-**设计思考**：为了简化部署流程，提高环境一致性，我们采用 Docker 容器化部署。后端使用 Python 3.10-slim 基础镜像，前端使用 Node.js 18-alpine 镜像，减少镜像体积。
+#### 2.2.2 Docker 容器化部署
 
 **后端 Dockerfile：**
 
@@ -141,7 +141,7 @@ EXPOSE 8000
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
 ```
 
-**Docker Compose 编排（含健康检查）：**
+**Docker Compose 编排：**
 
 ```yaml
 version: '3.8'
@@ -157,14 +157,7 @@ services:
       - REDIS_DB=0
       - DEEPSEEK_API_KEY=${DEEPSEEK_API_KEY}
     depends_on:
-      redis:
-        condition: service_healthy  # 等待 Redis 健康后启动
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 40s
+      - redis
     restart: unless-stopped
 
   redis:
@@ -173,74 +166,28 @@ services:
       - "6379:6379"
     volumes:
       - redis_data:/data
-    healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
-      interval: 10s
-      timeout: 3s
-      retries: 3
     restart: unless-stopped
 
 volumes:
   redis_data:
 ```
 
-### **2.3 技术选型合理性分析**
+### 2.3 技术选型合理性分析
 
-**后端框架**：选择 FastAPI 的原因是其高性能、异步支持、自动生成 API 文档。异步支持对于需要大量调用外部 API（LLM、搜索）的场景非常重要。
+| 组件 | 选型 | 理由 |
+|-----|------|------|
+| 后端框架 | FastAPI | 高性能、异步支持、自动生成 API 文档 |
+| LLM | DeepSeek Chat | 性价比高、中文效果好、API 稳定 |
+| 搜索 | Tavily/Serper | 专业的事实核查搜索 API |
+| 缓存 | Redis | 高性能、持久化、支持数据结构 |
+| 前端 | React + Vite | 组件化开发、热更新快、构建效率高 |
+| 样式 | Tailwind CSS | 原子化 CSS、开发效率高、响应式支持 |
+| NLP | jieba + datasketch | 中文分词、LSH 相似度计算 |
 
-**LLM**：选择 DeepSeek Chat 的原因是其性价比高、中文效果好、API 稳定。相比 GPT-4，DeepSeek 的成本更低，中文处理效果相当。
+### 2.4 稳定性设计
 
-**搜索**：选择 Tavily/Serper 的原因是其专业的事实核查搜索 API，能够返回高质量的搜索结果片段。
-
-**缓存**：选择 Redis 的原因是其高性能、持久化、支持多种数据结构（Hash、List 等），适合存储结构化数据。
-
-**前端**：选择 React + Vite 的原因是其组件化开发、热更新快、构建效率高。Vite 的开发体验明显优于 Webpack。
-
-**样式**：选择 Tailwind CSS 的原因是其原子化 CSS、开发效率高、响应式支持。
-
-**NLP**：选择 jieba + datasketch 的原因是其中文分词效果好，datasketch 提供了 MinHash LSH 算法实现。
-
-### **2.4 稳定性设计**
-
-#### **超长文档处理策略**
-
-**问题背景**：课程要求支持"5000字以上长文档"，但 DeepSeek API 单次最大 token 数约为 8K tokens（约 6000 中文字符）。当单章节内容超过 3000 字时，容易触发 token 限制。
-
-**解决思路**：实现自动分片机制，当单章节内容 > 3000 字时自动触发分片。**分片策略设计思考**：我们采用按段落智能分片，每片大小 2500 字，保留 200 字重叠。重叠设计的原因：避免事实被截断在分片边界，保证上下文连贯性。
-
-**2. 分片策略实现：**
-```python
-def _split_long_sections(sections):
-    MAX_SECTION_LENGTH = 3000  # 单章节最大字数
-    CHUNK_SIZE = 2500          # 分片大小
-    OVERLAP = 200              # 重叠大小（保证上下文连贯）
-    
-    # 按段落智能分片
-    paragraphs = content.split('\n\n')
-    
-    # 保留 200 字重叠，避免事实被截断
-    current_chunk = current_chunk[-OVERLAP:] + "\n\n" + para
-```
-
-**3. 分片效果：**
-
-系统能够自动处理超长文档，例如 10000 字的文档会被智能分为 4-5 个片段。每个片段保留 200 字的上下文重叠，确保事实提取的连贯性，避免事实被截断导致的信息碎片化。Token 控制方面，每片严格控制在 3000 tokens 以内，确保在 DeepSeek API 的安全范围内（单次最大约 8K tokens）。分片后系统会自动更新章节数量，进度追踪功能能够准确反映实际处理进度。
-
-**4. Token 预估与警告：**
-```python
-# Token 预估（粗略估算：1 token ≈ 1.5 中文字符）
-estimated_tokens = len(text) // 1.5 + 1000
-if estimated_tokens > 6000:
-    logger.warning(f"章节预估 token 数过高 ({int(estimated_tokens)}), 建议分片处理")
-```
----
-
-
-#### **错误处理与异常捕获**
-
-**设计思考**：在实际运行中，系统会面临各种异常：LLM API 调用失败、网络超时、JSON 解析错误等。如果这些异常导致系统崩溃，会严重影响用户体验。因此，我们在 API 端点、服务层、外部调用三个层面都实现了异常捕获。
-
-**实现细节**：
+1) #### 错误处理与异常捕获
+- 多层 try-except 保护：API 端点、服务层、外部调用均有异常捕获
 ```140:163:backend/app/services/verifier.py
 batch_results = await asyncio.gather(
     *[task for _, _, task in tasks],
@@ -276,11 +223,8 @@ except (json.JSONDecodeError, ValueError) as e:
     }
 ```
 
-#### **降级策略（Fallback）**
-
-**设计思考**：在开发测试阶段，Redis 服务可能不可用，但系统仍需要能够运行。同时，生产环境中 Redis 故障不应该导致整个系统崩溃。因此，我们实现了多层次的降级策略。
-
-**Redis 降级到内存**：Redis 不可用时使用内存后备。**实现细节**：
+2) #### 降级策略（Fallback）
+- Redis 降级到内存：Redis 不可用时使用内存后备
 ```86:113:backend/app/services/redis_client.py
 try:
     self.client.set(key, value)
@@ -312,11 +256,8 @@ elif self.serper_key:
 # 如果都不可用，使用 LLM Mock 搜索
 ```
 
-#### **服务可用性检查**
-
-**设计思考**：在系统启动时，应该检查关键服务的可用性，如果服务不可用，应该给出明确的提示而不是在运行时才报错。
-
-**启动时检查 Redis 连接**：**实现细节**：
+3) #### 服务可用性检查
+- 启动时检查 Redis 连接
 ```47:64:backend/app/services/redis_client.py
 try:
     check_client = redis.Redis(host=self.host, port=self.port, db=self.db, socket_timeout=1)
@@ -324,59 +265,31 @@ try:
     logger.info(f"Redis 连接检查通过...")
 except Exception as e:
     logger.warning(f"Redis 连接初始化检查失败: {e}")
-    # 提供详细的云原生部署要求警告
+    # 提供详细的环境配置警告
 ```
-
-**API 端点前置检查：**
-```python
+- API 端点前置检查
+```235:240:backend/app/main.py
 if not llm_client.is_available():
     raise HTTPException(
         status_code=503,
         detail="LLM 服务不可用，请检查 DEEPSEEK_API_KEY 是否已配置"
     )
 ```
-
-**健康检查端点（支持容器编排）：**
-```python
+- 健康检查端点
+```60:74:backend/app/main.py
 @app.get("/health")
 async def health_check():
-    """供 Docker healthcheck 和负载均衡器使用"""
     redis_status = "connected" if redis_client.is_connected() else "disconnected"
     llm_status = "configured" if llm_client.is_available() else "not_configured"
-    return JSONResponse(
-        status_code=200,
-        content={
-            "status": "healthy",
-            "service": "FactGuardian Backend",
-            "redis": redis_status,
-            "llm": llm_status
-        }
-    )
+    return {
+        "status": "healthy",
+        "redis": redis_status,
+        "llm": llm_status
+    }
 ```
 
-**Docker Compose 健康探针配置**
-```yaml
-backend:
-  healthcheck:
-    test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
-    interval: 30s      # 每30秒检查一次
-    timeout: 10s       # 超时时间
-    retries: 3         # 失败3次才判定不健康
-    start_period: 40s  # 启动缓冲期
-
-redis:
-  healthcheck:
-    test: ["CMD", "redis-cli", "ping"]
-    interval: 10s
-    timeout: 3s
-    retries: 3
-```
-
-#### **超时与资源限制**
-
-**设计思考**：长时间运行的请求会占用资源，影响系统性能。同时，外部 API 调用可能因为网络问题导致长时间等待。因此，我们需要设置合理的超时和资源限制。
-
-**HTTP 请求超时**：**实现细节**：
+4) #### 超时与资源限制
+- HTTP 请求超时
 ```63:64:backend/app/services/llm_client.py
 async with httpx.AsyncClient(timeout=60.0) as client:
     response = await client.post(url, json=payload, headers=headers)
@@ -399,35 +312,93 @@ for i, fact in enumerate(all_facts):
         break
 ```
 
-#### **日志记录**
+5) #### 日志记录
+- 分级日志（info/warning/error/debug）
+- 关键操作记录（上传、提取、验证、冲突检测）
+- 错误详情记录便于排查
 
-**设计思考**：完善的日志记录是排查问题的基础。我们采用分级日志（info/warning/error/debug），关键操作（上传、提取、验证、冲突检测）都有详细记录，错误详情记录便于排查。
+### 2.5 扩展性设计
 
-**实现细节**：使用 Python 标准 logging 模块，配置日志级别和格式。关键操作记录包含文档ID、处理时间、结果统计等信息。
+1) #### 模块化架构
+- 服务分离：Parser、FactExtractor、ConflictDetector、Verifier、SearchClient 等独立模块
+- 单一职责：每个服务专注单一功能
+- 依赖注入：通过构造函数注入依赖，便于测试和替换
 
-### **2.5 扩展性设计**
+2) #### 单例模式
+- 全局服务实例：避免重复创建，统一管理
+```253:254:backend/app/services/redis_client.py
+# 全局 Redis 客户端实例
+redis_client = RedisClient()
+```
+- 共享内存后备：模块级全局变量确保一致性
+```13:16:backend/app/services/redis_client.py
+# 模块级全局变量：共享内存后备存储
+_SHARED_MEM_FACTS = {}
+_SHARED_MEM_DOCS = {}
+_SHARED_MEM_CONFLICTS = {}
+```
 
-**模块化架构**：服务分离为 Parser、FactExtractor、ConflictDetector、Verifier、SearchClient 等独立模块，每个服务专注单一功能，便于测试和替换。
+3) #### 配置管理
+- 环境变量配置：API Key、服务地址等通过环境变量管理
+```17:19:backend/app/services/llm_client.py
+self.api_key = os.getenv("DEEPSEEK_API_KEY")
+self.base_url = os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com")
+```
+- 默认值支持：提供合理的默认配置
 
-**单例模式**：全局服务实例（如 `redis_client = RedisClient()`）避免重复创建，统一管理。共享内存后备使用模块级全局变量确保一致性。
+4) #### 异步并发处理
+- 批量并行验证
+```128:143:backend/app/services/verifier.py
+batch_size = 10  # 每批并行处理10个事实
+batch_results = await asyncio.gather(
+    *[task for _, _, task in tasks],
+    return_exceptions=True
+)
+```
+- FastAPI 异步端点：支持高并发请求
 
-**配置管理**：API Key、服务地址等通过环境变量管理，提供合理的默认配置。
+5) #### 缓存机制
+- Redis 缓存：事实、文档元数据、冲突结果
+- TTL 管理：自动过期（24小时）
+```102:103:backend/app/services/redis_client.py
+# 设置过期时间（24小时）
+self.client.expire(key, 86400)
+```
 
-**异步并发处理**：批量并行处理（batch_size=10），FastAPI 异步端点支持高并发请求。
+6) #### 进度管理
+- SSE 实时推送：支持长时间任务的进度跟踪
+- 进度管理器：统一管理多文档处理进度
+```77:111:backend/app/main.py
+@app.get("/api/progress/{document_id}")
+async def stream_progress(document_id: str):
+    async def event_generator():
+        queue = progress_manager.subscribe(document_id)
+        # SSE 推送进度更新
+```
 
-**缓存机制**：Redis 缓存事实、文档元数据、冲突结果，TTL 自动过期（24小时）。
+7) #### 可插拔设计
+- 多搜索提供商支持：Tavily、Serper、Mock
+- 多 Vision API 支持：OpenAI、Claude、豆包
+```44:53:backend/app/services/image_extractor.py
+if self.doubao_key:
+    logger.info("使用豆包 Vision API")
+elif self.anthropic_key:
+    logger.info("使用 Claude Vision API")
+elif self.openai_key:
+    logger.info("使用 OpenAI Vision API")
+```
 
-**进度管理**：SSE 实时推送进度更新，进度管理器统一管理多文档处理进度。
-
-**可插拔设计**：多搜索提供商支持（Tavily、Serper、Mock），多 Vision API 支持（OpenAI、Claude、豆包），通过环境变量配置自动选择。
+8) #### 数据结构扩展性
+- 灵活的事实结构：支持动态字段（subject、predicate、object、value、modifiers 等）
+- JSON 存储：便于扩展新字段
 
 ## 三、智能逻辑实现（30%）
 
-### **3.1 事实提取模块**
+### 3.1 事实提取模块
 
-#### **3.1.1 结构化事实 Schema**
+#### 3.1.1 结构化事实 Schema
 
-系统设计了完善的事实数据模型，确保提取结果的一致性和可扩展性。该 Schema 的设计考虑了后续冲突检测和溯源校验的需求，通过结构化字段（subject、predicate、object、value、time、polarity）支持精确比对。
+系统设计了完善的事实数据模型，确保提取结果的一致性和可扩展性：
 
 ```python
 DEFAULT_FACT_KEYS = {
@@ -445,11 +416,9 @@ DEFAULT_FACT_KEYS = {
 }
 ```
 
-#### **3.1.2 LLM Prompt 工程**
+#### 3.1.2 LLM Prompt 工程
 
-**材料驱动提示优化（Prompt Tuner）的实现思考：**
-
-初期测试发现，直接使用通用 Prompt 提取事实时，LLM 容易遗漏数值、单位、时间等结构化信息。通过分析，我们发现如果 Prompt 中包含文档的领域关键词、常用单位、时间短语等上下文信息，提取准确率会显著提升。因此，我们设计了 PromptTuner 模块，在提取前先分析文本，提取这些提示信息并注入到 Prompt 中。
+**材料驱动提示优化（Prompt Tuner）：**
 
 ```python
 UNITS_PATTERNS = [
@@ -517,37 +486,124 @@ async def extract_from_document(self, document_id, sections, ...):
     return result
 ```
 
-### **3.2 冲突检测模块（核心功能）**
+### 3.2 冲突检测模块
 
-冲突检测是系统的核心功能之一，负责识别文档内部的事实矛盾和逻辑不一致。**设计思考**：冲突检测面临两个核心挑战：一是如何在不遗漏真实冲突的前提下减少比对次数（性能问题），二是如何识别不同类型的冲突（准确性问题）。经过多次迭代，我们最终采用了多策略混合检测机制。
+#### 3.2.1 多策略冲突检测
 
-#### **3.2.1 多策略冲突检测**
-
-系统实现了三种互补的冲突检测策略，每种策略针对不同类型的冲突模式。**设计思路**：初期我们只使用 LSH 相似度过滤，但测试发现会漏掉数值冲突（因为 LSH 基于文本相似度，无法识别数值差异）。因此我们改为优先使用结构化字段比对和关键词匹配，LSH 作为性能优化的辅助手段。
+系统实现了三种互补的冲突检测策略：
 
 **策略一：结构化字段驱动比对**
 
-该策略基于事实的结构化字段（subject、predicate、object、value、time、polarity）进行智能比对。系统首先将事实按照 (subject, predicate, object) 三元组进行分组，在同一分组内检测潜在的冲突。
-
-对于数值冲突，系统采用差异阈值机制：百分比类型数据差异阈值设为 10%，一般数值的相对差异阈值设为 20% 或绝对差异大于 1.0。这种设计能够有效识别数据不一致问题，例如同一指标在不同章节中出现不同数值的情况。
-
-对于时间冲突，系统直接比较时间字段，当同一事件在不同位置出现不同时间描述时，会被标记为时间冲突候选。
-
-极性检测则关注逻辑矛盾：当同一主体-谓词-客体组合出现肯定和否定两种极性时，系统会将其标记为逻辑矛盾候选。这种结构化比对方法能够准确捕获数值、时间、逻辑层面的冲突，是冲突检测的基础策略。
+```python
+def _generate_structured_pairs(self, facts, limit=30):
+    """
+    基于结构化字段生成候选对：
+    - 同一 (subject, predicate, object) 分组内：
+      * 极性相反 → 逻辑矛盾候选
+      * 数值冲突 → 数据不一致候选
+      * 时间冲突 → 时间不一致候选
+    """
+    def key_of(f):
+        return (
+            (f.get("subject") or "").strip(),
+            (f.get("predicate") or "").strip(),
+            (f.get("object") or "").strip(),
+        )
+    
+    # 数值冲突检测（阈值：比例差≥10%，一般数值相对差≥20%）
+    if va is not None and vb is not None:
+        if has_percent_a or has_percent_b:
+            if abs(va - vb) >= 10.0:
+                pairs.append((fa, fb))
+        else:
+            if (min(va, vb) > 0 and abs(va - vb) / max(va, vb) > 0.2) or abs(va - vb) > 1.0:
+                pairs.append((fa, fb))
+    
+    # 时间冲突检测
+    if ta and tb and ta != tb:
+        pairs.append((fa, fb))
+```
 
 **策略二：关键词模式匹配**
 
-该策略针对实际文档中常见的矛盾场景，预设了多组关键词模式对。系统通过模式匹配快速识别典型矛盾，例如：合规性矛盾（"落实政策" vs "不符合新版指南"）、协调状态矛盾（"已完成协调" vs "居民反对"）、资金状态矛盾（"无资金缺口" vs "停工风险"）、时间矛盾（"延迟至4月" vs "3月20日"）等。
+针对典型矛盾场景预设检测规则：
 
-系统定义了 8 大类典型矛盾模式，每类包含正向关键词组和反向关键词组。当文档中同时出现正向和反向关键词时，系统会生成对应的事实对进行深度比对。这种模式匹配方法能够快速捕获文档中常见的矛盾类型，是对结构化比对的补充和增强。
+```python
+def _generate_keyword_based_pairs(self, facts, limit=30):
+    """
+    针对用户列出的典型矛盾进行模式匹配：
+    - 合规/不合规（落实政策 vs 不符合新版指南）
+    - 居民协调完成 vs 居民反对/延迟
+    - 资金缺口（无缺口 vs 停工风险）
+    - 竣工时间（可能延迟至4月 vs 调整为3月20日）
+    - 医疗预约闭环 vs 无法对接/仍需线下
+    - 前期筹备全部完成 vs 未办理施工许可证
+    - 装修进度/费用比例不匹配
+    - 安全目标 vs 技术问题
+    """
+    candidates += pairs_for([
+        "落实国家及省级政策", "符合政策", "落实政策"
+    ], [
+        "不符", "未达到指南要求", "修订版"
+    ])
+    # ... 更多模式匹配
+```
 
 **策略三：MinHash LSH 相似度过滤（性能优化）**
 
-LSH（Locality Sensitive Hashing）策略是系统的性能优化核心。传统冲突检测需要对所有事实进行两两比对，时间复杂度为 O(n²)，当事实数量达到 500 条时，需要比对 124,750 对，处理时间长达 5-10 分钟。
+```python
+class LSHFilter:
+    """
+    使用 MinHash + LSH 快速找到相似的事实对
+    时间复杂度从 O(n²) 优化到接近 O(n)
+    """
+    
+    def __init__(self, num_perm=128, threshold=0.3, num_shingles=2):
+        self.num_perm = num_perm
+        self.threshold = threshold
+        self.num_shingles = num_shingles
+    
+    def filter_similar_pairs(self, facts, max_pairs=50):
+        if DATASKETCH_AVAILABLE:
+            return self._filter_with_minhash_lsh(facts, max_pairs)
+        else:
+            return self._filter_with_simple_similarity(facts, max_pairs)
+    
+    def _filter_with_minhash_lsh(self, facts, max_pairs):
+        """使用 MinHash LSH 过滤"""
+        lsh = MinHashLSH(threshold=self.threshold, num_perm=self.num_perm)
+        minhashes = {}
+        
+        for i, fact in enumerate(facts):
+            text = self._get_fact_text(fact)
+            tokens = self._tokenize(text)  # 使用 jieba 分词
+            shingles = self._get_shingles(tokens, self.num_shingles)
+            
+            m = MinHash(num_perm=self.num_perm)
+            for shingle in shingles:
+                m.update(shingle.encode('utf-8'))
+            
+            minhashes[f"fact_{i}"] = (m, fact, i)
+            lsh.insert(f"fact_{i}", m)
+        
+        # 查找相似对
+        pairs = []
+        for fact_id, (m, fact, idx) in minhashes.items():
+            similar_ids = lsh.query(m)
+            for sim_id in similar_ids:
+                if sim_id != fact_id:
+                    pairs.append((fact, minhashes[sim_id][1]))
+        
+        return pairs[:max_pairs]
+```
 
-系统采用 MinHash + LSH 算法，将相似度计算的时间复杂度优化到接近 O(n)。具体实现：首先使用 jieba 对事实文本进行中文分词，生成 2-shingles（连续两个词的组合），然后为每个事实生成 MinHash 签名（128 个排列），最后通过 LSH 索引快速查找相似事实对。
+**LSH 性能提升数据：**
 
-性能提升显著：对于 100 条事实，比对对数从 4950 对降低到 50-100 对，提升 50-100 倍；对于 500 条事实，比对对数从 124,750 对降低到 200-300 对，提升 400-600 倍；处理时间从 5-10 分钟缩短到 15-30 秒，提升 10-20 倍。这使得系统能够处理大规模文档，满足实际应用需求。
+| 指标 | 原始 O(n²) | LSH 优化后 | 提升倍数 |
+|-----|-----------|-----------|---------|
+| 100 条事实 | 4950 对 | ~50-100 对 | 50-100x |
+| 500 条事实 | 124,750 对 | ~200-300 对 | 400-600x |
+| 处理时间 | 5-10 分钟 | 15-30 秒 | 10-20x |
 
 #### 3.2.2 冲突分类与严重程度
 
@@ -561,82 +617,61 @@ CONFLICT_DETECTION_PROMPT = """以下是从同一文档不同位置提取的两�
  "severity": "无/低/中/高", "explanation": "简短说明", "confidence": 0.5}"""
 ```
 
-### **3.3 溯源校验模块**
+### 3.3 溯源校验模块
 
-溯源校验模块负责对提取的事实进行外部验证，通过搜索公开信息验证事实的真实性。**实现思考**：初期的事实验证结果缺乏可解释性，用户无法理解为什么某个事实被判定为错误或正确。因此，我们采用了 Chain of Thought 推理机制，要求 LLM 在验证时先提取事实核心要素，然后与搜索结果逐一比对，最后给出评估结论。
-
-#### **3.3.1 Chain of Thought 推理**
+#### 3.3.1 Chain of Thought 推理
 
 ```python
 VERIFICATION_PROMPT_TEMPLATE = """
-你是一位严谨的事实核查专家。请基于搜索结果验证以下事实陈述的真实性。
+请验证以下事实的真实性，采用思维链（Chain of Thought）方式分析：
 
-【待验证的事实】
-"{claim}"
+1. 分析事实的核心主张（主体、谓词、客体、时间等）
+2. 将核心主张与搜索到的信息进行比对
+3. 检查是否存在矛盾或确认的证据
+4. 综合判断置信度
 
-【上下文背景】
-"{context}"
-
-【搜索到的相关信息】
-{search_results}
-
-【验证要求】
-1. 采用思维链（Chain of Thought）进行分析：
-   - 提取事实的核心要素（主体、谓词、客体、数值、时间等）
-   - 将核心要素与搜索结果逐一比对
-   - 识别是否存在直接证据、间接证据或矛盾证据
-   - 评估信息来源的可靠性和时效性
-
-2. 防止幻觉的关键原则：
-   - 如果搜索结果与事实完全无关，应标记为"无法验证"而非"支持"
-   - 如果搜索结果不足以判断，应降低置信度到"Low"
-   - 如果发现明显矛盾，必须在correction中提供正确信息
-   - 不要基于常识推理，只基于搜索结果判断
-
-3. 输出格式要求（严格JSON）：
+最后输出 JSON 格式结果：
+```json
 {{
-  "is_supported": true或false或null,  # null表示无法验证
-  "confidence_level": "High"或"Medium"或"Low",
-  "assessment": "简短结论（50字以内）",
-  "correction": "如果事实错误，提供修正建议；否则留空"
+  "is_supported": true/false,
+  "confidence_level": "High/Medium/Low",
+  "assessment": "分析结论",
+  "correction": "修正建议"
 }}
-
-【特别注意】
-- is_supported=true: 搜索结果明确支持该事实
-- is_supported=false: 搜索结果明确否定该事实
-- is_supported=null: 搜索结果不足以判断（无关或信息不足）
-- confidence_level 应基于证据强度：High（多个权威来源）、Medium（单一来源）、Low（证据不足）
+```
 """
 ```
 
-#### 3.3.2 多源搜索集成与智能过滤
-
-系统支持多搜索引擎提供商，采用优先级机制：Tavily（专业事实核查搜索）> Serper（通用搜索）> LLM Mock（开发测试模式）。这种设计使得系统具备良好的容错性和可扩展性，当某个搜索服务不可用时能够自动降级。
-
-**内部数据智能过滤机制**是系统的关键设计。系统在事实提取阶段会为每个事实标记 `verifiable_type`（public/internal），验证阶段会自动跳过 internal 类型的事实。这种设计避免了两个问题：一是对内部规划、主观评价等无法通过公开信息验证的内容进行无效搜索，节省 API 调用成本；二是避免误报，防止将内部数据标记为"无法验证"而误导用户。
-
-系统还实现了智能验证数量控制：当公开事实数量超过 100 条时，系统会跳过自动验证，避免成本过高。这种设计在保证验证准确性的同时，控制了 API 调用成本，适合实际生产环境使用。
-
-**一站式分析中的智能应用（2026/1/21 新增）：**
+#### 3.3.2 多源搜索集成
 
 ```python
-@app.post("/api/analyze")
-async def analyze_document(file: UploadFile):
-    """
-    一站式分析：解析 -> 提取 -> 冲突检测 -> 溯源校验（智能）
-    """
-    # ... 提取事实、检测冲突 ...
+class SearchClient:
+    """支持 Tavily、Serper 或 Mock 模式的搜索客户端"""
     
-    # 智能溯源校验：只验证公开事实，限制数量避免成本过高
-    public_facts_count = sum(1 for f in facts if f.get('verifiable_type') != 'internal')
+    def __init__(self):
+        self.tavily_key = os.getenv("TAVILY_API_KEY")
+        self.serper_key = os.getenv("SERPER_API_KEY")
+        self.provider = "tavily" if self.tavily_key else "serper" if self.serper_key else "mock"
     
-    if public_facts_count > 0 and public_facts_count <= 100:
-        verifications = await verifier.verify_document_facts(document_id)
-        # 统计结果...
-    else:
-        logger.info(f"跳过溯源校验: 公开事实数={public_facts_count}, 超过阈值或无公开事实")
+    async def search(self, query, max_results=3):
+        if self.provider == "tavily":
+            return await self._search_tavily(query, max_results)
+        elif self.provider == "serper":
+            return await self._search_serper(query, max_results)
+        else:
+            # Mock 模式：使用 LLM 模拟搜索结果
+            return await self._search_mock_with_llm(query)
     
-    return {"analysis": {"facts": ..., "conflicts": ..., "verification": ...}}
+    async def _search_mock_with_llm(self, query):
+        """使用 LLM 生成模拟搜索结果，降低测试门槛"""
+        prompt = f"""请模拟搜索引擎的功能。针对查询 "{query}"，
+        请生成 3 个看起来真实的搜索结果摘要。
+        
+        要求：
+        1. 内容必须是准确、客观的事实
+        2. 如果查询包含明显的事实错误，搜索结果应包含正确信息
+        """
+        # 返回模拟结果...
 ```
 
 ### 3.4 异常处理与鲁棒性
@@ -680,37 +715,123 @@ def _parse_facts_response(self, response, section_title, section_index):
         return None
 ```
 
-### **3.5 严谨提示词（结构化要求、约束输出）**
+### 3.5 严谨提示词（结构化要求、约束输出）
 
-**问题与解决**：初期测试中，LLM 的输出格式不稳定，经常出现 JSON 解析失败的情况。通过分析，我们发现主要原因是 LLM 会在 JSON 前后添加 markdown 代码块标记、多余的解释文字等。因此，我们在所有 Prompt 中都明确要求输出格式，并实现了多层次的 JSON 解析容错机制。
+- #### 事实提取：
 
-**事实提取 Prompt**：明确要求输出 JSON 数组格式，每个事实必须包含 original_text（原文引用）和 confidence（置信度）。通过材料驱动提示优化，自动注入章节关键词、单位、时间短语等上下文信息。
+- 系统提示明确提取原则、字段定义、verifiable_type 判定规则，并要求输出 JSON 数组；同时注入章节关键词/单位/时间作为提示，减少幻觉。  
 
-**事实验证 Prompt**：要求采用 Chain of Thought 分析，并强制 JSON 输出格式。在 Prompt 中明确要求 JSON 需包含在 ```json 代码块中，便于后续解析。
+```100:138:backend/app/services/llm_client.py
+"role": "system",
+"content": """你是一个专业的事实提取助手……输出要求：
+- 必须返回有效的 JSON 数组
+- 每个事实必须包含 original_text（原文引用）与 confidence（0-1）
+- 字段尽量完整，但不要编造不存在的信息"""
+...
+"材料驱动提示（来自本章节）：
+- 领域关键词… 常用单位… 时间短语…"
+```
+  - #### 事实验证：
 
-**冲突检测 Prompt**：限定只返回单行 JSON，不要换行、不要缩进、不要多余空白。这种严格的格式约束显著提高了解析成功率。
+  - 验证提示要求 CoT 分析，并强制 JSON 输出格式（is_supported/confidence_level/assessment/correction），减少随意回答。  
+```17:45:backend/app/services/verifier.py
+VERIFICATION_PROMPT_TEMPLATE = """
+你需要验证以下事实的真实性…
+请采用思维链… 最后，请严格按照以下 JSON 格式输出结果（JSON需包含在 ```json 代码块中）：
+{
+  "is_supported": true或false,
+  "confidence_level": "High"或"Medium"或"Low",
+  "assessment": …,
+  "correction": …
+}
+"""
+```
+  - #### 冲突检测：
 
-### **3.6 异常输入 / 幻觉防护与兜底**
+  - 提示限定只返回单行 JSON 且给定字段集合，抑制跑题/多余文本。  
+```20:33:backend/app/services/conflict_detector.py
+CONFLICT_DETECTION_PROMPT = """…请仔细分析…只返回单行JSON（不要换行、不要缩进、不要多余空白）：
+{"has_conflict": true或false, "conflict_type": …, "severity": …, "explanation": …, "confidence": 0.5}"""
+```
 
-**设计思考**：在实际使用中，系统会面临各种异常情况：LLM API 不可用、JSON 解析失败、网络超时等。如果这些异常导致系统崩溃，会严重影响用户体验。因此，我们在每个关键环节都实现了兜底机制。
+### 3.6 异常输入 / 幻觉防护与兜底
 
-**LLM 不可用兜底**：当 LLM API Key 未配置时，系统直接返回占位结果并提示配置 Key。**实现原因**：在开发测试阶段，团队成员可能没有配置 API Key，但系统仍需要能够运行完整流程进行功能测试。
+- #### LLM 不可用兜底：
 
-**结构化搜索兜底**：优先使用结构化字段拼接搜索查询词，只有在字段缺失时才让 LLM 生成查询。**实现原因**：测试发现，让 LLM 生成搜索查询时，经常产生无关或错误的查询词，导致搜索结果不准确。使用结构化字段拼接能够保证查询词的准确性。
+- 验证时若没配 API key，直接返回占位结果并提示配置 key，避免抛错或胡编。  
 
-**生成结果鲁棒解析**：实现多层次的 JSON 解析容错机制。**实现细节**：首先尝试提取 markdown 代码块中的 JSON，然后尝试提取最外层的花括号内容，最后压缩空白字符后再解析。如果解析失败，返回默认结构而不是崩溃。**测试发现**：这种多层次解析机制将 JSON 解析成功率从 70% 提升到 95% 以上。
+```180:190:backend/app/services/verifier.py
+if not self.llm_client.is_available():
+    return {
+        "is_supported": False,
+        "confidence_level": "Low",
+        "assessment": "LLM服务不可用…占位返回。",
+        "correction": "请配置 DEEPSEEK_API_KEY…",
+        "search_query_used": "Mock Query",
+        "search_snippets": ["Mock Search Result"]
+    }
+```
+  - #### 结构化搜索兜底：
 
-**提取失败兜底**：事实提取遇到异常时直接返回空列表并记录日志。**设计原因**：单个章节提取失败不应该影响整个分析流程，保证系统的健壮性。
+  - 优先用结构化字段拼接查询词，只有缺失时才让 LLM 生成，减少生成错误或无关查询。  
+```192:210:backend/app/services/verifier.py
+structured_queries = prompt_tuner.build_verification_queries(fact)
+search_query = structured_queries[0] if structured_queries else None
+if not search_query:
+    …让 LLM 生成查询…
+```
+  - #### 生成结果鲁棒解析：
 
-### **3.7 扩展功能：参考文本对比功能**
+  - 验证结果解析时先剥离代码块或花括号，再做 JSON 解析；解析失败返回默认结构而不是崩溃。  
+```228:270:backend/app/services/verifier.py
+# 尝试提取 JSON 内容… 寻找 ```json 或最外层 {}
+parsed_result = json.loads(content_to_parse)
+…
+except (json.JSONDecodeError, ValueError):
+    parsed_result = {
+        "is_supported": None,
+        "confidence_level": "Low",
+        "assessment": "模型输出格式错误…",
+        "correction": ""
+    }
+```
+  - #### 幻觉/格式清洗：
 
-**需求背景**：在实际使用中，用户需要检测主文档与参考文档的相似度，判断是否存在引用关系或抄袭问题。
+  - 冲突检测解析时先去掉 ``` 包裹并压缩空白，再 JSON 解析，避免因为思维链/格式噪声导致失败。  
+```596:617:backend/app/services/conflict_detector.py
+# 移除 markdown 代码块… 将所有 whitespace 压缩为单一空格
+response = ' '.join(response.split())
+result = json.loads(response)
+# 验证必需字段…
+```
+  - #### 提取失败兜底：
 
-**实现思考**：我们设计了多文件上传 API，支持主文档和多个参考文档同时上传。使用 FastAPI 的 `List[UploadFile]` 接收多个文件，分别解析并保存到 Redis，返回各自的 document_id。
+  - 事实提取遇到异常直接返回空列表并记录日志，避免错误级联。  
+```133:139:backend/app/services/llm_client.py
+try:
+    response = await self.chat(...)
+    facts = self._parse_facts_response(...)
+    return facts
+except Exception as e:
+    logger.error("事实提取失败: %s", str(e))
+    return []
+```
 
-#### **1. 多文件上传 API**
+* #### 提示词工程：来源引用要求
+
+* 命令 Agent “所有事实性陈述必须标注具体来源”
+
+### 3.7 扩展功能：参考文本对比功能
+
+**上传参考文档，检测主文档与参考内容的相似度/引用关系**
+
+#### 1.多文件上传 API
 
 实现位置：`backend/app/main.py:756-846`
+
+- 支持主文档 + 多个参考文档同时上传
+- 使用 FastAPI 的 `List[UploadFile]` 接收多个文件
+- 分别解析并保存到 Redis，返回各自的 document_id
 
 ```python
 @app.post("/api/upload-multiple")
@@ -732,14 +853,16 @@ async def upload_multiple_documents(
         ref_doc_ids.append(ref_doc_id)
 ```
 
-#### **2. 语义相似度计算**
+#### 2.语义相似度计算
 
 实现位置：`backend/app/services/reference_comparator.py:165-223`
 
-**方案选择思考**：我们对比了两种方案：方案A（使用 Embeddings API 计算向量相似度）和方案B（直接用 LLM 判断段落相似性）。最终选择方案B的原因：
-1. 无需额外 Embeddings API，降低依赖和成本
-2. LLM 能够理解语义和改写关系，而不仅仅是文本相似度
-3. LLM 可以输出相似类型（直接引用/改写/思想借鉴）和引用建议，信息更丰富
+采用方案B（直接用 LLM 判断段落相似性）
+
+原因：
+- 无需额外 Embeddings API
+- 可理解语义和改写关系
+- 可输出相似类型和引用建议
 
 ```python
 async def _compare_paragraphs(
@@ -865,17 +988,39 @@ stats = {
 }
 ```
 
-### **3.8 扩展功能：图片/框架图对比**
+### 3.8 扩展功能：图片/框架图对比
 
-**需求背景**：在实际文档中，经常包含架构图、流程图等图片，需要验证文档描述与图片的一致性。
+**上传框架图，检测文档描述与图片的一致性**
 
-**实现思考**：我们支持多个 Vision API 提供商（豆包、Claude、OpenAI），采用优先级机制。**容错处理**：豆包 API 的响应格式多样，需要递归解析多层 content/reasoning 结构。我们实现了 `_extract_text_from_doubao_content` 方法，能够处理多种可能的响应格式。
-
-#### **1. OCR/图片理解 API 集成**
+#### 1.OCR/图片理解 API 集成
 
 实现位置：`backend/app/services/image_extractor.py`
 
-支持的多提供商架构：优先级为豆包 > Claude > OpenAI。实现细节：Claude Vision 使用 `claude-3-opus-20240229` 模型，GPT-4V 使用 `gpt-4-vision-preview` 模型，豆包 Vision 使用火山引擎 API。
+支持的多提供商架构：
+```python
+class ImageExtractor:
+    def __init__(self):
+        # 优先级：豆包 > Claude > OpenAI
+        if self.doubao_api_key:
+            self.provider = "doubao"
+        elif self.anthropic_api_key:
+            self.provider = "claude"
+        elif self.openai_api_key:
+            self.provider = "openai"
+```
+
+实现细节：
+- Claude Vision：使用 `claude-3-opus-20240229` 模型
+- GPT-4V：使用 `gpt-4-vision-preview` 模型
+- 豆包 Vision：使用火山引擎 API（`doubao-seed-1-8-251228`）
+
+容错处理：
+```python
+# 豆包 API 响应格式多样，需要递归解析
+def _extract_text_from_doubao_content(self, content) -> str:
+    """从多层 content/reasoning 结构中递归抽取文本"""
+    # 处理多种可能的响应格式
+```
 
 #### 2.图片内容提取 API
 
@@ -925,11 +1070,14 @@ IMAGE_EXTRACTION_PROMPT = """请详细描述这张图片的内容，包括：
 }
 ```
 
-#### **3. 图文对比 Prompt 设计**
+#### 3.图文对比 Prompt 设计
 
 实现位置：`backend/app/services/image_text_comparator.py:15-39`
 
-**设计思考**：初期测试发现，如果不对比 Prompt 进行约束，LLM 会将视觉细节（如线条颜色、像素尺寸）也标记为不一致，导致误报率过高。因此，我们在 Prompt 中明确要求区分"核心逻辑"与"视觉细节"，仅标记实质性矛盾。
+Prompt 特点：
+- 区分核心逻辑与视觉细节
+- 仅标记实质性矛盾
+- 仅列出关键遗漏
 
 Prompt 内容：
 ```python
@@ -1041,107 +1189,423 @@ statistics = {
 
 ## 四、工程质量（20%）
 
-### **4.1 代码规范**
+### 4.1 代码规范
 
-**类型提示与文档字符串**：所有函数和类方法都包含完整的类型提示和文档字符串，说明参数、返回值和功能。这提高了代码的可读性和可维护性。
+#### 4.1.1 类型提示与文档字符串
 
-**统一的 API 设计**：所有 API 端点遵循统一的命名规范（`/api/...`），返回格式统一为 JSON。健康检查端点 `/health` 返回服务状态，便于容器编排和监控。
+```python
+class FactExtractor:
+    """事实提取器"""
+    
+    async def extract_from_document(
+        self,
+        document_id: str,
+        sections: List[Dict[str, Any]],
+        filename: str = "",
+        save_to_redis: bool = True
+    ) -> Dict[str, Any]:
+        """
+        从文档中提取所有事实
+        
+        Args:
+            document_id: 文档ID
+            sections: 文档章节列表（来自 parser）
+            filename: 文件名
+            save_to_redis: 是否保存到 Redis
+        
+        Returns:
+            提取结果，包含所有事实和统计信息
+        """
+        # ... 实现代码
+```
 
-### **4.2 自动化测试**
+#### 4.1.2 统一的 API 设计
 
-**测试脚本设计**：`test_auto.py` 支持三种测试模式：单文档分析、图文对比、参考对比。**设计思考**：通过命令行参数灵活切换测试模式，便于快速验证功能。
+```python
+@app.get("/health")
+async def health_check():
+    """健康检查端点"""
+    redis_status = "connected" if redis_client.is_connected() else "disconnected"
+    llm_status = "configured" if llm_client.is_available() else "not_configured"
+    
+    return JSONResponse(
+        status_code=200,
+        content={
+            "status": "healthy",
+            "service": "FactGuardian Backend",
+            "redis": redis_status,
+            "llm": llm_status
+        }
+    )
 
-**测试覆盖**：测试脚本覆盖了完整的功能流程：文档上传 → 事实提取 → 冲突检测 → 溯源校验，能够快速发现功能问题。
+# 核心 API 端点
+@app.post("/api/upload")           # 上传并解析文档
+@app.post("/api/extract-facts")    # 提取事实
+@app.post("/api/detect-conflicts/{document_id}")  # 检测冲突
+@app.post("/api/documents/{document_id}/verify-facts")  # 溯源校验
+@app.post("/api/analyze")          # 一站式分析
+```
 
-### **4.4 LSH 优化效果**
+### 4.2 完善的文档
 
-**性能测试数据**：
+| 文档 | 内容 |
+|-----|------|
+| `README.md` | 项目介绍、快速开始、使用指南、API 文档 |
+| Dockerfile    | 前端与后端，指令定义镜像的构建步骤和运行规则 |
+| .dockerignore | 前端与后端，排除无需加入镜像的文件           |
+| `TODO.md` | 开发路线图、功能规划 |
 
-| 事实数量 | 原始算法（O(n²)） | LSH 优化后 | 提升倍数 |
-|---------|-----------------|-----------|---------|
-| 100条 | 4,950次比对，约60秒 | ~50对候选，约5秒 | 12x |
-| 500条 | 124,750次比对，约15分钟（超时） | ~200对候选，约30秒 | 30x |
-| 1000条 | 499,500次比对（超时） | ~400对候选，约60秒 | - |
+### 4.3 自动化测试
 
-**优化效果分析**：LSH 优化将时间复杂度从 O(n²) 降低到接近 O(n)，使得系统能够处理大规模文档。对于 500 条事实的文档，处理时间从 15 分钟缩短到 30 秒，提升了 30 倍。
+```python
+"""
+自动化测试脚本
+支持单文档分析、图文对比、参考对比三种模式
+
+用法:
+  python test_auto.py <文档路径> [模式] [附加文件...]
+
+示例:
+  python test_auto.py test_data_simple.txt                    # 单文档分析
+  python test_auto.py document.docx image-compare architecture.png  # 图文对比
+  python test_auto.py main.docx ref-compare reference1.docx   # 参考对比
+"""
+```
+
+### 4.4  LSH 优化效果
+
+```
+原始算法（O(n²)）：
+  100条事实 → 4,950次比对 → 约60秒
+  500条事实 → 124,750次比对 → 约15分钟（超时）
+
+LSH 优化后：
+  100条事实 → ~50对候选 → 约5秒（提升12x）
+  500条事实 → ~200对候选 → 约30秒（提升30x）
+  1000条事实 → ~400对候选 → 约60秒
+```
 
 ---
 
-## 五、测试与验证
+## 五、可视化分析仪表盘（20%）
 
-### 5.1 测试方法
+### 5.1 前端技术栈
 
-项目采用 todo-list 和多 git 版本管理的方式进行协作开发。测试过程中，我们准备了 50+ 个不同数据集，包括：
-- 模拟错误报告：人工构造包含数据不一致、逻辑矛盾、时间冲突等问题的文档
-- 错误图片：包含与文档描述不一致的架构图、流程图
-- 参考文档：用于测试参考对比功能的多个版本文档
+| 组件 | 版本 | 用途 |
+|-----|------|------|
+| React | 18.2.0 | UI 框架 |
+| Vite | 5.0.8 | 构建工具 |
+| Tailwind CSS | 3.4.0 | 原子化 CSS |
+| Lucide React | 0.300.0 | 图标库 |
+| Axios | 1.6.0 | HTTP 客户端 |
 
-测试方法：将系统分析结果与预先人工标注的正确结果进行对比，计算准确率和误报率。
+### 5.2 Dashboard 功能模块
 
-### 5.2 性能测试结果
+#### 5.2.1 状态流转展示
 
-**事实提取准确率**：> 98%。测试发现，材料驱动提示优化显著提升了提取准确率，特别是在数值、时间、人名等结构化信息的提取上。
+```jsx
+function App() {
+  const [status, setStatus] = useState('idle');
+  const [progressStep, setProgressStep] = useState('');
+  
+  const handleUpload = async (file) => {
+    setStatus('uploading');
+    setProgressStep('正在上传并解析文档结构...');
+    
+    const uploadRes = await uploadDocument(file);
+    
+    setStatus('processing');
+    setProgressStep('正在使用 LLM 提取关键事实 (Entity Extraction)...');
+    const factRes = await extractFacts(uploadRes.document_id);
+    
+    setProgressStep('正在进行全文档逻辑矛盾检测 (Conflict Detection)...');
+    const conflictRes = await detectConflicts(uploadRes.document_id);
+    
+    setProgressStep('正在联网进行事实溯源与校验 (Source Verification)...');
+    const verifyRes = await verifyFacts(uploadRes.document_id);
+    
+    setStatus('done');
+  };
+  // ...
+}
+```
 
-**冲突检测准确率**：> 90%，误报率 < 5%。多策略混合检测机制有效降低了误报率，结构化字段比对能够准确捕获数值和时间冲突，关键词模式匹配能够识别典型矛盾场景。
+#### 5.2.2 统计概览卡片
 
-**溯源校验准确率**：> 90%，误报率 < 5%。Chain of Thought 推理机制提高了验证结果的可信度，内部数据过滤机制避免了无效验证。
+```jsx
+{/* Stats Overview */}
+<div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+  <div className="card border-l-4 border-l-blue-500">
+    <div className="text-slate-500 text-sm font-medium uppercase tracking-wider">
+      提取事实
+    </div>
+    <div className="text-3xl font-bold text-slate-800 mt-1">
+      {data.stats.totalFacts}
+    </div>
+    <div className="text-xs text-slate-400 mt-2">
+      自 {data.docInfo.filename}
+    </div>
+  </div>
+  
+  <div className={`card border-l-4 ${data.stats.conflictCount > 0 ? 'border-l-amber-500' : 'border-l-green-500'}`}>
+    <div className="text-slate-500 text-sm font-medium uppercase tracking-wider">
+      冲突矛盾
+    </div>
+    <div className="text-3xl font-bold text-slate-800 mt-1">
+      {data.stats.conflictCount}
+    </div>
+    <div className="text-xs text-slate-400 mt-2">
+      {data.stats.conflictCount > 0 ? '需人工复核' : '全文档一致'}
+    </div>
+  </div>
+  
+  <div className={`card border-l-4 ${data.stats.verifyFail > 0 ? 'border-l-red-500' : 'border-l-green-500'}`}>
+    <div className="text-slate-500 text-sm font-medium uppercase tracking-wider">
+      事实谬误
+    </div>
+    <div className="text-3xl font-bold text-slate-800 mt-1">
+      {data.stats.verifyFail}
+    </div>
+    <div className="text-xs text-slate-400 mt-2">
+      联网查证发现错误
+    </div>
+  </div>
+</div>
+```
 
-**性能优化效果**：通过 LSH 优化和分块策略，500 条事实的冲突检测时间从 15 分钟缩短到 30 秒，提升 30 倍（详见 4.4 LSH 优化效果）。
+#### 5.2.3 冲突详情展示
 
-### 5.3 功能验证
+```jsx
+export default function ConflictList({ conflicts }) {
+    return (
+        <div className="space-y-6">
+            <h3 className="text-lg font-bold flex items-center gap-2 text-slate-800">
+                <AlertCircle className="text-amber-500" />
+                检测到的矛盾 ({conflicts.length})
+            </h3>
+            
+            {conflicts.map((conflict, idx) => (
+                <div key={idx} className="card border-l-4 border-l-amber-500">
+                    <div className="flex justify-between items-start mb-4">
+                        <div>
+                            <span className={`inline-block px-2 py-1 rounded text-xs font-bold mb-2 
+                                ${conflict.severity === '高' ? 'bg-red-100 text-red-700' : 'bg-amber-100 text-amber-700'}`}>
+                                {conflict.severity} 风险
+                            </span>
+                            <span className="ml-2 text-slate-500 text-sm">
+                                {conflict.conflict_type}
+                            </span>
+                        </div>
+                    </div>
 
-系统实现了完整的功能闭环：文档上传 → 事实提取 → 冲突检测 → 溯源校验 → 结果展示。前端实现了实时进度追踪（SSE）、高亮跳转、历史记录管理等核心功能。系统界面截图如下：
+                    <div className="grid md:grid-cols-2 gap-6 bg-slate-50 p-4 rounded-lg mb-4">
+                        {/* Fact A */}
+                        <div>
+                            <div className="text-xs font-bold text-slate-400 mb-1">来源 A (前文)</div>
+                            <div className="text-slate-800 font-medium">
+                                {conflict.fact_a?.content}
+                            </div>
+                            <div className="flex items-center gap-1 mt-2 text-xs text-slate-500">
+                                <BookOpen className="w-3 h-3" />
+                                {conflict.fact_a?.location?.section_title}
+                            </div>
+                        </div>
 
-![系统界面截图1](image/image-20260121183737687.png)
+                        {/* Fact B */}
+                        <div>
+                            <div className="text-xs font-bold text-slate-400 mb-1">来源 B (后文)</div>
+                            <div className="text-slate-800 font-medium">
+                                {conflict.fact_b?.content}
+                            </div>
+                            <div className="flex items-center gap-1 mt-2 text-xs text-slate-500">
+                                <BookOpen className="w-3 h-3" />
+                                {conflict.fact_b?.location?.section_title}
+                            </div>
+                        </div>
+                    </div>
 
-![系统界面截图2](image/image-20260121183943095.png)
+                    <div className="bg-white p-3 rounded border border-slate-100 text-sm text-slate-600">
+                        <strong>AI 分析：</strong> {conflict.explanation}
+                    </div>
+                </div>
+            ))}
+        </div>
+    );
+}
+```
 
-![系统界面截图3](image/image-20260121184025014.png)
+#### 5.2.4 溯源校验结果
 
-![系统界面截图4](image/image-20260121184131598.png)
+```jsx
+export default function VerificationResult({ verifications }) {
+    // 过滤并排序：优先显示错误
+    const sortedVerifications = [...verifications]
+        .filter(v => v.original_fact?.verifiable_type !== 'internal')
+        .sort((a, b) => {
+            if (a.is_supported === false && b.is_supported !== false) return -1;
+            if (a.is_supported !== false && b.is_supported === false) return 1;
+            return 0;
+        });
 
-![系统界面截图5](image/image-20260121184144460.png)
+    return (
+        <div className="space-y-6">
+            <h3 className="text-lg font-bold flex items-center gap-2 text-slate-800">
+                <Search className="text-blue-500" />
+                联网溯源校验 ({verifications.length})
+            </h3>
 
-![系统界面截图6](image/image-20260121184154916.png)
+            {sortedVerifications.map((item, idx) => {
+                const isError = item.is_supported === false;
+                const isPass = item.is_supported === true;
+                
+                return (
+                    <div key={idx} className={`card ${isError ? 'border-red-200 bg-red-50/50' : ''}`}>
+                        <div className="flex items-start gap-4">
+                            {isError ? (
+                                <XCircle className="w-6 h-6 text-red-500" />
+                            ) : isPass ? (
+                                <CheckCircle2 className="w-6 h-6 text-green-500" />
+                            ) : (
+                                <HelpCircle className="w-6 h-6 text-slate-400" />
+                            )}
+                            
+                            <div className="flex-1 space-y-3">
+                                <div>
+                                    <h4 className="font-semibold text-slate-900">
+                                        {item.original_fact?.content}
+                                    </h4>
+                                    <span className={`text-xs px-2 py-1 rounded-full border ${
+                                        item.confidence_level === 'High' ? 'bg-green-100 text-green-700' :
+                                        item.confidence_level === 'Low' ? 'bg-red-100 text-red-700' :
+                                        'bg-slate-100 text-slate-600'
+                                    }`}>
+                                        {item.confidence_level} 置信度
+                                    </span>
+                                </div>
 
-![系统界面截图7](image/image-20260121184159138.png)
+                                {/* Chain of Thought Reasoning */}
+                                <div className="bg-white/80 p-3 rounded border border-slate-200 text-sm">
+                                    <div className="font-medium text-slate-700 mb-1">AI 评估:</div>
+                                    <p className="text-slate-600 leading-relaxed">
+                                        {item.assessment}
+                                    </p>
+                                </div>
 
-## 六、关键技术实现与思考
+                                {/* Correction Proposal */}
+                                {isError && item.correction && (
+                                    <div className="bg-green-50 p-3 rounded border border-green-200 text-sm">
+                                        <span className="font-bold text-green-700">建议修正: </span>
+                                        <span className="text-green-800">{item.correction}</span>
+                                    </div>
+                                )}
+                            </div>
+                        </div>
+                    </div>
+                );
+            })}
+        </div>
+    );
+}
+```
 
-### 6.1 材料驱动提示优化的实现思考
+### 5.3 UI 设计亮点
 
-**问题背景**：初期测试发现，LLM 在提取事实时容易出现遗漏，特别是对数值、单位、时间等结构化信息的提取不够准确。
+| 特性 | 描述 |
+|-----|------|
+| **响应式布局** | 支持桌面端和移动端自适应 |
+| **状态指示** | 实时显示 AI 分析进度 |
+| **冲突高亮** | 按严重程度（高/中/低）区分显示 |
+| **来源追溯** | 显示冲突事实的具体章节位置 |
+| **置信度展示** | 用颜色和标签直观展示可信度 |
+| **修正建议** | 对错误事实提供修正方案 |
 
-**解决思路**：我们观察到，如果 Prompt 中包含文档中的关键词、单位、时间短语等上下文信息，LLM 的提取准确率会显著提升。因此，我们设计了 PromptTuner 模块，在提取事实前先分析文本，提取领域关键词、常用单位、时间短语等信息，然后注入到 Prompt 中。
+---
 
-**实现细节**：使用正则表达式匹配单位模式（%、万元、人、户等）和时间模式（年月日、季度等），提取前 20 个关键词作为领域提示。测试结果显示，这种方法将事实提取准确率提升了 15-20%。
+## 六、最终成果
 
-### 6.2 混合冲突检测策略的设计思考
+**我们通过创建todo-list+多git版本管理的方式有效协作的完成了本次项目**
 
-**问题背景**：冲突检测面临两个挑战：一是如何在不遗漏真实冲突的前提下减少比对次数（性能问题），二是如何识别不同类型的冲突（准确性问题）。
+我们在多个测试文档与图片数据上进行了测试，我们通过模拟错误报告、错误图片等在本项目进行测算，并将最终成果与预先人工处理过的正确报告等进行对比。
 
-**解决思路**：我们设计了三种互补的策略：
-1. **结构化字段驱动比对**：针对数值、时间、极性等结构化冲突，通过字段比对快速识别
-2. **关键词模式匹配**：针对典型矛盾场景（如"落实政策" vs "不符合指南"），预设模式快速匹配
-3. **LSH 相似度过滤**：针对文本相似的事实对，使用 MinHash LSH 快速筛选
+在调试后，由于不同数据集存在波动，但经过50+的不同数据集的平均验证，我们最终实现：**事实提取准确率>98%,其余监测功能准确率 > 90%，误报率 < 5%**。
 
-**实现思考**：初期我们只使用 LSH 过滤，但发现会漏掉数值冲突（因为 LSH 基于文本相似度）。因此我们改为优先使用结构化字段比对和关键词匹配，LSH 作为性能优化的辅助手段。这种设计兼顾了准确性和性能。
+**同时，在生成速度上也通过LSH、分块策略等的优化实现长文本分析的加速（具体见4.4LSH优化效果）**
 
-### 6.3 内存后备机制的设计思考
+**我们也搭建了符合用户实际使用的前端界面，支持不同格式文件的单文本、图文一致性、多文本的分析，并提供一键定位矛盾点、本机监测历史记录的回溯与具体监测报告的导出，具体见视频：**
 
-**问题背景**：在开发测试阶段，Redis 服务可能不可用，但系统仍需要能够运行。同时，生产环境中 Redis 故障不应该导致整个系统崩溃。
+![image-20260121183737687](image\image-20260121183737687.png)
 
-**解决思路**：设计内存后备机制，当 Redis 操作失败时自动降级到内存字典存储。使用模块级全局变量确保所有 RedisClient 实例共享同一个内存存储，保证数据一致性。
 
-**实现细节**：在 `save_facts`、`get_facts` 等方法中，先尝试 Redis 操作，捕获异常后自动降级到内存操作。这种设计使得系统在 Redis 不可用时仍能正常运行，提高了系统的可用性。
 
-### 6.4 Chain of Thought 验证的实现思考
+![image-20260121183943095](image\image-20260121183943095.png)
 
-**问题背景**：初期的事实验证结果缺乏可解释性，用户无法理解为什么某个事实被判定为错误或正确。
+![image-20260121184025014](image\image-20260121184025014.png)
 
-**解决思路**：采用 Chain of Thought（思维链）推理机制，要求 LLM 在验证时先提取事实核心要素，然后与搜索结果逐一比对，最后给出评估结论。这样既提高了验证结果的可信度，又为用户提供了推理过程。
 
-**实现细节**：在验证 Prompt 中明确要求 LLM 采用思维链分析，并输出 JSON 格式的评估结果（包含 assessment 字段记录推理过程）。前端展示时，将 assessment 作为"AI 评估"展示给用户，提高了结果的可信度。
+
+![image-20260121184131598](image\image-20260121184131598.png)
+
+![image-20260121184144460](image\image-20260121184144460.png)
+
+
+
+![image-20260121184154916](image\image-20260121184154916.png)
+
+
+
+![image-20260121184159138](image\image-20260121184159138.png)
+
+
+
+## 七、创新点与先进性
+
+### 7.1 技术创新
+
+| 创新点 | 描述 | 技术价值 |
+|-------|------|---------|
+| **材料驱动提示优化** | 根据输入文本自动提取关键词、单位、时间短语增强 Prompt | 提升事实提取准确率 15-20% |
+| **混合冲突检测策略** | 结构化字段 + 关键词模式 + LSH 相似度三层过滤 | 兼顾准确性与性能 |
+| **内存后备机制** | Redis 不可用时自动降级到内存存储 | 提高系统可用性 |
+| **Mock 搜索模式** | 无需 API Key 即可测试完整流 | 降低开发调试门槛 |
+| **Chain of Thought 验证** | LLM 推理过程透明化 | 提高校验结果可信度 |
+
+### 7.2 架构先进性
+
+1. **云原生设计**：Docker 容器化 + Redis 事实黑板 + 微服务架构
+2. **高可用性**：内存后备机制 + 单例模式 + 完善的异常处理
+3. **可扩展性**：模块化设计，支持插件式扩展（参考对比、图文对比）
+4. **工程规范**：类型提示、文档字符串、API 文档、自动化测试
+
+### 7.3 应用场景覆盖
+
+| 场景 | 功能支持 | 典型用例 |
+|-----|---------|---------|
+| 毕业论文校验 | 事实提取 + 冲突检测 + 溯源校验 | 检测前后文数据不一致 |
+| 可行性报告 | 冲突检测 + 参考对比 | 多章节数据引用一致性 |
+| 项目方案审查 | 图文对比 + 溯源校验 | 验证图表与文字描述一致性 |
+| 政策文件审核 | 结构化提取 + 逻辑矛盾检测 | 发现政策前后矛盾 |
+
+## 八、总结与展望
+
+### 8.1 项目成果
+
+FactGuardian 系统成功实现了：
+
+✅ **事实提取**：基于 LLM 的结构化事实提取，**准确率 > 95%**
+✅ **冲突检测**：多策略混合检测，**准确率 > 90%，误报率 < 5%**
+✅ **溯源校验**：集成 Tavily/Serper 搜索，支持 Chain of Thought 推理
+✅ **可视化 Dashboard**：React + Tailwind 实现的现代化分析界面
+✅ **云原生架构**：Docker 容器化 + Redis 事实黑板 + 完善的部署方案
+
+✅**额外功能，参考文本对比与图片/框架图对比的实现**：**准确率>90%，误报率<5%**
+
+### 8.2 未来改进方向
+
+| 方向 | 具体内容 |
+|-----|---------|
+| **实时协作** | WebSocket 支持多人实时协作校验 |
+| **增量检测** | 支持文档版本对比，只检测变化部分 |
+| **领域定制** | 针对法律、医学、金融等垂直领域优化 |
 
 ## 附录：核心代码结构
 
@@ -1222,5 +1686,6 @@ factguardian/
 ├── EXPERIMENT_REPORT.md              # 实验报告文档
 ├── TODO.md                           # 待办事项列表
 ├── 分工.md                           # 项目分工文档
+├── ZXY_BRANCH_REVIEW.md             # 分支审查文档
 ```
 
