@@ -2,6 +2,8 @@
 
 FactGuardian 是一个基于大语言模型（LLM）的智能文档审核系统，能够自动从文档中提取关键事实，检测内部逻辑冲突，并通过外部验证来验证事实来源。系统特别适用于多人员协作文档的质量控制，如学术论文、可行性报告、技术文档等。
 
+演示视频请见链接：[云计算大作业 —— 长文本事实卫士_哔哩哔哩_bilibili](https://www.bilibili.com/video/BV1KfzNBdEFn/?buvid=Y54E6A5DD79803BE4070B15319EC7D2FCAD0&from_spmid=main.space-contribution.0.0&is_story_h5=false&mid=5DgUfFEXb10Ofb%2Fdu%2FOS0Q%3D%3D&plat_id=116&share_from=ugc&share_medium=iphone&share_plat=ios&share_session_id=CA77D354-36DA-4C92-8238-16B4B1D3AC8F&share_source=WEIXIN&share_tag=s_i&spmid=united.player-video-detail.0.0&timestamp=1769156728&unique_k=tn8NVzJ&up_id=402873341)
+
 ### 核心能力
 
 - **智能事实提取**：基于 LLM 的结构化事实提取，支持多种事实类型
